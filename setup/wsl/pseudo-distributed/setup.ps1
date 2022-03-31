@@ -31,9 +31,13 @@
 .PARAMETER WslDistroInstallLocation
     Specifies the place to install WSL distribution. Default is "wsl-distros" directory in the user's home path.
 
+.PARAMETER Batch
+    Specify no intections with the user.
+
 #>
 
 param(
+    [switch]$Batch,
     [switch]$SkipWslInstallation,
     [String]$PathToUbuntuDistro = $null,
     [switch]$SkipDistroImport,
@@ -53,6 +57,7 @@ if ($SkipWslInstallation -and $ReimportDistro)
 $DebugPreference = "Continue"
 $FocalFossaWslImageUri = 'https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64-wsl.rootfs.tar.gz'
 
+$Batch = $true
 $SkipWslInstallation = $true
 $SkipDistroImport = $true
 $PathToUbuntuDistro = 'C:\v.kisel\wsl\images\ubuntu\focal-fossa_20.04.LTS\focal-server-cloudimg-amd64-wsl.rootfs.tar.gz'
@@ -134,6 +139,61 @@ $ErrorActionPreference = 'SilentlyContinue'
 wsl -d $WslDistroName -- apt-get install -y ssh pdsh openjdk-8-jre openjdk-8-jdk | Write-Debug
 $ErrorActionPreference = 'Continue'
 
-# gpg --key-server pgpkeys.mit.edu -recv-key 
+function removeHadoopTmpFiles([String]$WslDistroName)
+{
+    wsl -d $WslDistroName -- cd /tmp "&&" rm -f ./all_known_keys.gpg ./hadoop_sign_cleartext ./hadoop_keys ./hadoop-3.3.2.tar.gz.sha512 ./hadoop-3.3.2.tar.gz.asc # ./hadoop-3.3.2.tar.gz
+}
+$hadoop332TarGzUri = 'https://dlcdn.apache.org/hadoop/common/hadoop-3.3.2/hadoop-3.3.2.tar.gz'
+$hadoop332TarGzAscUri = 'https://dlcdn.apache.org/hadoop/common/hadoop-3.3.2/hadoop-3.3.2.tar.gz.asc'
+$hadoop332TarGzSha512Uri = 'https://dlcdn.apache.org/hadoop/common/hadoop-3.3.2/hadoop-3.3.2.tar.gz.sha512'
+$hadoopKeysUri = 'https://dlcdn.apache.org/hadoop/common/KEYS'
+removeHadoopTmpFiles($WslDistroName)
+#wsl -d $WslDistroName -- curl -o /tmp/hadoop-3.3.2.tar.gz -s $hadoop332TarGzUri
+wsl -d $WslDistroName -- curl -o /tmp/hadoop-3.3.2.tar.gz.sha512 -s $hadoop332TarGzSha512Uri
+$hadoopDistroSha512CheckResultTxt = $(wsl -d $WslDistroName -- cd /tmp "&&" sha512sum --check --warn ./hadoop-3.3.2.tar.gz.sha512)
+wsl -d $WslDistroName -- curl -o /tmp/hadoop-3.3.2.tar.gz.asc -s $hadoop332TarGzAscUri
+wsl -d $WslDistroName -- curl -o /tmp/hadoop_keys -s $hadoopKeysUri
+$ErrorActionPreference = 'SilentlyContinue' # Due to some missing keys
+wsl -d $WslDistroName -- gpg --import /tmp/hadoop_keys | Write-Debug
+$ErrorActionPreference = 'Continue'
+wsl -d $WslDistroName -- rm -f /tmp/all_known_keys.gpg /tmp/hadoop_sign_cleartext
+wsl -d $WslDistroName -- gpg --export --output /tmp/all_known_keys.gpg | Write-Debug
+wsl -d $WslDistroName -- cd /tmp "&&" gpgv --log-file ./hadoop_sign_cleartext --keyring ./all_known_keys.gpg ./hadoop-3.3.2.tar.gz.asc ./hadoop-3.3.2.tar.gz
+$hadoopDistroSignatureCleartext = $(wsl -d $WslDistroName -- cat /tmp/hadoop_sign_cleartext)
+$hadoopDistroSignerGoogleQuery = 'https://www.google.com/search?q="' + $(wsl -d $WslDistroName -- grep -P '"(?<=Good signature from \")(.+?)(?=\")"' --max-count 1 -o /tmp/hadoop_sign_cleartext) + '"'
+'Please, verify the downloaded Hadoop distribution:' | Write-Output
+"`tSHA512 check sum:`n`t`t$hadoopDistroSha512CheckResultTxt" | Write-Output
+"`tSignature cleartext:`n$($hadoopDistroSignatureCleartext | foreach {return "`t`t" + $_ + "`n"})" | Write-Output
+if (-not $Batch)
+{
+    if ('y' -eq $(Read-Host -Prompt "Would you like to google for the signer[y/n]?")[0].ToString().ToLower())
+    {
+        Write-Debug 'assumed "yes"'
+        Start-Process $hadoopDistroSignerGoogleQuery.Replace(' ', '%20')
+    }
+    else
+    {
+        Write-Debug 'assumed "no"'
+    }
+    if ('y' -ne $(Read-Host -Prompt "Do you trust the signer[y/n]?")[0].ToString().ToLower())
+    {
+        Write-Debug 'assumed "no"'
+        Write-Host 'Stopped the script.'
+        break
+    }
+}
+wsl -d $WslDistroName -- cd / "&&" tar -xzf /tmp/hadoop-3.3.2.tar.gz --overwrite
+if ($(wsl -d $WslDistroName -- grep "'export JAVA_HOME=/usr/'" /hadoop-3.3.2/etc/hadoop/hadoop-env.sh -c) -le 0)
+{
+    wsl -d $WslDistroName -- echo "'export JAVA_HOME=/usr/'" '>>' /hadoop-3.3.2/etc/hadoop/hadoop-env.sh
+    '"/hadoop-3.3.2/etc/hadoop/hadoop-env.sh" changed' | Write-Debug
+}
+if ($(wsl -d $WslDistroName -- grep "'PATH=`$PATH:/hadoop-3.3.2/bin'" ~/.bashrc -c) -le 0)
+{
+    wsl -d $WslDistroName -- echo "'PATH=`$PATH:/hadoop-3.3.2/bin'" ">>" ~/.bashrc
+    '"~/.bashrc" changed"' | Write-Debug
+}
+
+removeHadoopTmpFiles($WslDistroName)
 
 ##################################################################################################################
